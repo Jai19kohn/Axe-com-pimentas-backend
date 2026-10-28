@@ -34,9 +34,6 @@ public class ProductEntity {
     @Column(nullable = false, length = 80)
     private String categoryId;
 
-    @Column(nullable = false)
-    private int stock;
-
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
     private FulfillmentMode fulfillmentMode;
@@ -45,13 +42,12 @@ public class ProductEntity {
     }
 
     public ProductEntity(String name, String description, BigDecimal price, BigDecimal originalPrice,
-            String categoryId, int stock, FulfillmentMode fulfillmentMode) {
+            String categoryId, FulfillmentMode fulfillmentMode) {
         this.name = name;
         this.description = description;
         this.price = price;
         this.originalPrice = originalPrice;
         this.categoryId = categoryId;
-        this.stock = stock;
         this.fulfillmentMode = fulfillmentMode;
     }
 
@@ -97,14 +93,6 @@ public class ProductEntity {
 
     public void setCategoryId(String categoryId) {
         this.categoryId = categoryId;
-    }
-
-    public int getStock() {
-        return stock;
-    }
-
-    public void setStock(int stock) {
-        this.stock = stock;
     }
 
     public FulfillmentMode getFulfillmentMode() {

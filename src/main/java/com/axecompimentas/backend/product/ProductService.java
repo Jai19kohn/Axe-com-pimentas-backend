@@ -2,6 +2,7 @@ package com.axecompimentas.backend.product;
 
 import java.util.List;
 
+import com.axecompimentas.backend.inventory.InventoryService;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -12,9 +13,11 @@ import org.springframework.web.server.ResponseStatusException;
 public class ProductService {
 
         private final ProductRepository productRepository;
+        private final InventoryService inventoryService;
 
-        public ProductService(ProductRepository productRepository) {
+        public ProductService(ProductRepository productRepository, InventoryService inventoryService) {
                 this.productRepository = productRepository;
+                this.inventoryService = inventoryService;
         }
 
         /**
@@ -34,13 +37,16 @@ public class ProductService {
                                 .orElseThrow(() -> notFound(id));
         }
 
+        @Transactional
         public Product create(ProductRequest product) {
                 ProductEntity entity = new ProductEntity(product.name(), product.description(), product.price(),
-                                product.originalPrice(), product.categoryId(), product.stock(),
-                                product.fulfillmentMode());
-                return toProduct(productRepository.save(entity));
+                                product.originalPrice(), product.categoryId(), product.fulfillmentMode());
+                ProductEntity saved = productRepository.save(entity);
+                inventoryService.initializeFinishedStock(saved.getId());
+                return toProduct(saved);
         }
 
+        @Transactional
         public Product update(long id, ProductRequest product) {
                 ProductEntity entity = productRepository.findById(id)
                                 .orElseThrow(() -> notFound(id));
@@ -49,9 +55,9 @@ public class ProductService {
                 entity.setPrice(product.price());
                 entity.setOriginalPrice(product.originalPrice());
                 entity.setCategoryId(product.categoryId());
-                entity.setStock(product.stock());
                 entity.setFulfillmentMode(product.fulfillmentMode());
-                return toProduct(productRepository.save(entity));
+                ProductEntity saved = productRepository.save(entity);
+                return toProduct(saved);
         }
 
         @Transactional(readOnly = true)
@@ -63,18 +69,19 @@ public class ProductService {
 
                 ProductEntity product = productRepository.findById(id)
                                 .orElseThrow(() -> notFound(id));
+                int finishedStock = inventoryService.findFinishedQuantity(id);
                 int quantityFromStock;
                 int quantityToProduce;
                 boolean canBeOrdered = true;
 
                 switch (product.getFulfillmentMode()) {
                         case READY_TO_SHIP -> {
-                                canBeOrdered = product.getStock() >= requestedQuantity;
+                                canBeOrdered = finishedStock >= requestedQuantity;
                                 quantityFromStock = canBeOrdered ? requestedQuantity : 0;
                                 quantityToProduce = 0;
                         }
                         case MADE_TO_ORDER -> {
-                                quantityFromStock = Math.min(product.getStock(), requestedQuantity);
+                                quantityFromStock = Math.min(finishedStock, requestedQuantity);
                                 quantityToProduce = requestedQuantity - quantityFromStock;
                         }
                         case CUSTOM -> {
@@ -88,17 +95,18 @@ public class ProductService {
                                 quantityFromStock, quantityToProduce, canBeOrdered);
         }
 
+        @Transactional
         public void delete(long id) {
                 if (!productRepository.existsById(id)) {
                         throw notFound(id);
                 }
+                inventoryService.deleteFinishedStock(id);
                 productRepository.deleteById(id);
         }
 
         private Product toProduct(ProductEntity entity) {
                 return new Product(entity.getId(), entity.getName(), entity.getDescription(), entity.getPrice(),
-                                entity.getOriginalPrice(), entity.getCategoryId(), entity.getStock(),
-                                entity.getFulfillmentMode());
+                                entity.getOriginalPrice(), entity.getCategoryId(), entity.getFulfillmentMode());
         }
 
         private ResponseStatusException notFound(long id) {
