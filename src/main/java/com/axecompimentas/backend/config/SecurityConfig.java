@@ -30,6 +30,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/products", "/api/products/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/api/products/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/api/products/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/products/next-sku").hasRole("ADMIN")
+                        .requestMatchers("/api/suppliers/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/inventory/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/api/inventory/**").hasRole("ADMIN")
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().permitAll())
                 .httpBasic(basic -> basic

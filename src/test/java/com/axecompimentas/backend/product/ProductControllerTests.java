@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import com.axecompimentas.backend.inventory.InventoryRepository;
+import com.axecompimentas.backend.inventory.StockMovementRepository;
+import com.axecompimentas.backend.supplier.SupplierRepository;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -39,10 +42,18 @@ class ProductControllerTests {
   @Autowired
   private InventoryRepository inventoryRepository;
 
+  @Autowired
+  private StockMovementRepository stockMovementRepository;
+
+  @Autowired
+  private SupplierRepository supplierRepository;
+
   @BeforeEach
   void clearProducts() {
+    stockMovementRepository.deleteAll();
     inventoryRepository.deleteAll();
     productRepository.deleteAll();
+    supplierRepository.deleteAll();
   }
 
   @Test
@@ -54,7 +65,8 @@ class ProductControllerTests {
           "price": 19.90,
           "originalPrice": 24.90,
           "categoryId": "molhos",
-          "fulfillmentMode": "MADE_TO_ORDER"
+          "fulfillmentMode": "MADE_TO_ORDER",
+          "productionLeadTimeDays": 5
         }
         """;
 
@@ -86,7 +98,8 @@ class ProductControllerTests {
           "price": 21.90,
           "originalPrice": null,
           "categoryId": "molhos",
-          "fulfillmentMode": "MADE_TO_ORDER"
+          "fulfillmentMode": "MADE_TO_ORDER",
+          "productionLeadTimeDays": 5
         }
         """;
     mockMvc.perform(put(location)
@@ -104,7 +117,24 @@ class ProductControllerTests {
         .andExpect(jsonPath("$.quantity").value(8));
 
     mockMvc.perform(delete(location).header("Authorization", ADMIN_AUTHORIZATION))
-        .andExpect(status().isNoContent());
+        .andExpect(status().isConflict());
+    mockMvc.perform(put(location)
+        .header("Authorization", ADMIN_AUTHORIZATION)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("""
+            {
+              "name": "Molho extra forte",
+              "description": "Receita artesanal",
+              "price": 21.90,
+              "originalPrice": null,
+              "categoryId": "molhos",
+              "fulfillmentMode": "MADE_TO_ORDER",
+              "productionLeadTimeDays": 5,
+              "active": false
+            }
+            """))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.active").value(false));
     mockMvc.perform(get(location))
         .andExpect(status().isNotFound());
   }
@@ -152,6 +182,7 @@ class ProductControllerTests {
   @Test
   void rejectsNegativeFinishedStock() throws Exception {
     mockMvc.perform(put("/api/inventory/products/1/finished-stock")
+        .header("Authorization", ADMIN_AUTHORIZATION)
         .contentType(MediaType.APPLICATION_JSON)
         .content("""
             { "quantity": -1 }
@@ -168,7 +199,8 @@ class ProductControllerTests {
           "price": 15.00,
           "originalPrice": null,
           "categoryId": "molhos",
-          "fulfillmentMode": "MADE_TO_ORDER"
+          "fulfillmentMode": "MADE_TO_ORDER",
+          "productionLeadTimeDays": 5
         }
         """;
     MvcResult createResult = mockMvc.perform(post("/api/products")
@@ -224,7 +256,9 @@ class ProductControllerTests {
           "price": 18.00,
           "originalPrice": null,
           "categoryId": "molhos",
-          "fulfillmentMode": "CUSTOM"
+          "fulfillmentMode": "CUSTOM",
+          "productionLeadTimeDays": 10,
+          "customizationDescription": "  Escolha até 3 pimentas  "
         }
         """;
     MvcResult createResult = mockMvc.perform(post("/api/products")
@@ -232,6 +266,8 @@ class ProductControllerTests {
         .contentType(MediaType.APPLICATION_JSON)
         .content(product))
         .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.productionLeadTimeDays").value(10))
+        .andExpect(jsonPath("$.customizationDescription").value("Escolha até 3 pimentas"))
         .andReturn();
 
     String location = createResult.getResponse().getHeader("Location");
@@ -276,6 +312,66 @@ class ProductControllerTests {
   }
 
   @Test
+  void creatingProductWithInitialStockRecordsOneReceiptInAdministrativeHistory() throws Exception {
+    MvcResult result = mockMvc.perform(post("/api/products")
+        .header("Authorization", ADMIN_AUTHORIZATION)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("""
+            {
+              "name": "Produto com estoque inicial",
+              "description": "Descrição",
+              "price": 10.00,
+              "categoryId": "molhos",
+              "fulfillmentMode": "READY_TO_SHIP",
+              "initialStock": 8
+            }
+            """))
+        .andExpect(status().isCreated())
+        .andReturn();
+
+    long id = productId(result.getResponse().getHeader("Location"));
+    mockMvc.perform(get("/api/inventory/products/" + id + "/finished-stock"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.quantity").value(8));
+    mockMvc.perform(get("/api/admin/inventory/movements").header("Authorization", ADMIN_AUTHORIZATION))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.length()").value(1))
+        .andExpect(jsonPath("$[0].productId").value(id))
+        .andExpect(jsonPath("$[0].type").value("RECEIPT"))
+        .andExpect(jsonPath("$[0].quantityDelta").value(8))
+        .andExpect(jsonPath("$[0].resultingQuantity").value(8))
+        .andExpect(jsonPath("$[0].reason").value("Estoque inicial"));
+  }
+
+  @Test
+  void creatingProductsWithZeroOrMissingInitialStockDoesNotRecordMovement() throws Exception {
+    for (String initialStock : new String[] { ", \"initialStock\": 0", "" }) {
+      MvcResult result = mockMvc.perform(post("/api/products")
+          .header("Authorization", ADMIN_AUTHORIZATION)
+          .contentType(MediaType.APPLICATION_JSON)
+          .content("""
+              {
+                "name": "Produto sem estoque",
+                "description": "Descrição",
+                "price": 10.00,
+                "categoryId": "molhos",
+                "fulfillmentMode": "READY_TO_SHIP" %s
+              }
+              """.formatted(initialStock)))
+          .andExpect(status().isCreated())
+          .andReturn();
+      long id = productId(result.getResponse().getHeader("Location"));
+      mockMvc.perform(get("/api/inventory/products/" + id + "/finished-stock"))
+          .andExpect(status().isOk())
+          .andExpect(jsonPath("$.quantity").value(0));
+    }
+
+    mockMvc.perform(get("/api/admin/inventory/movements").header("Authorization", ADMIN_AUTHORIZATION))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.length()").value(0));
+  }
+
+  @Test
   void inventoryEndpointReadsAndSetsFinishedStock() throws Exception {
     MvcResult createResult = mockMvc.perform(post("/api/products")
         .header("Authorization", ADMIN_AUTHORIZATION)
@@ -311,6 +407,104 @@ class ProductControllerTests {
   }
 
   @Test
+  void movementEndpointRequiresAdminAndReplaysRequestsIdempotently() throws Exception {
+    MvcResult createResult = mockMvc.perform(post("/api/products")
+        .header("Authorization", ADMIN_AUTHORIZATION)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("""
+            {
+              "name": "Produto",
+              "description": "Descrição",
+              "price": 10.00,
+              "categoryId": "molhos",
+              "fulfillmentMode": "READY_TO_SHIP"
+            }
+            """))
+        .andExpect(status().isCreated())
+        .andReturn();
+
+    long productId = productId(createResult.getResponse().getHeader("Location"));
+    String movementUrl = "/api/inventory/products/" + productId + "/finished-stock/movements";
+    String requestKey = UUID.randomUUID().toString();
+    String receipt = """
+        {
+          "type": "RECEIPT",
+          "quantity": 8,
+          "reason": "Compra recebida",
+          "reference": "NF-123",
+          "responsible": "Operador",
+          "idempotencyKey": "%s"
+        }
+        """.formatted(requestKey);
+
+    mockMvc.perform(post(movementUrl)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(receipt))
+        .andExpect(status().isUnauthorized());
+    mockMvc.perform(post(movementUrl)
+        .header("Authorization", ADMIN_AUTHORIZATION)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(receipt))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.quantityDelta").value(8))
+        .andExpect(jsonPath("$.resultingQuantity").value(8));
+    mockMvc.perform(post(movementUrl)
+        .header("Authorization", ADMIN_AUTHORIZATION)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(receipt))
+        .andExpect(status().isOk());
+    mockMvc.perform(get(movementUrl))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.length()").value(1));
+    mockMvc.perform(get("/api/inventory/products/" + productId + "/finished-stock"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.quantity").value(8));
+  }
+
+  @Test
+  void supplierCanBeCreatedSelectedAndSkuIsReservedAsSixDigits() throws Exception {
+    mockMvc.perform(get("/api/products/next-sku")
+        .header("Authorization", ADMIN_AUTHORIZATION))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.sku").value(org.hamcrest.Matchers.matchesPattern("\\d{6}")));
+
+    mockMvc.perform(post("/api/suppliers")
+        .header("Authorization", ADMIN_AUTHORIZATION)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("{\"name\":\"Fornecedor A\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.name").value("Fornecedor A"));
+    long supplierId = supplierRepository.findAll().get(0).getId();
+
+    mockMvc.perform(post("/api/products")
+        .header("Authorization", ADMIN_AUTHORIZATION)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("""
+            {
+              "name": "Produto",
+              "description": "Descrição",
+              "price": 10.00,
+              "categoryId": "molhos",
+              "fulfillmentMode": "READY_TO_SHIP",
+              "sku": "654321",
+              "supplierId": %d,
+              "active": false
+            }
+            """.formatted(supplierId)))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.supplier").value("Fornecedor A"))
+        .andExpect(jsonPath("$.supplierId").value(supplierId))
+        .andExpect(jsonPath("$.sku").value("654321"))
+        .andExpect(jsonPath("$.active").value(false));
+
+    mockMvc.perform(post("/api/suppliers")
+        .header("Authorization", ADMIN_AUTHORIZATION)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("{\"name\":\"fornecedor a\"}"))
+        .andExpect(status().isConflict());
+  }
+
+  @Test
   void allowsCorsPreflightForFrontendOrigin() throws Exception {
     mockMvc.perform(options("/api/products")
         .header("Origin", "http://localhost:4200")
@@ -324,6 +518,7 @@ class ProductControllerTests {
 
   private void setFinishedStock(long productId, int quantity) throws Exception {
     mockMvc.perform(put("/api/inventory/products/" + productId + "/finished-stock")
+        .header("Authorization", ADMIN_AUTHORIZATION)
         .contentType(MediaType.APPLICATION_JSON)
         .content("{\"quantity\":" + quantity + "}"))
         .andExpect(status().isOk());

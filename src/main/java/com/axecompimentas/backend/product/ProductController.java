@@ -31,6 +31,11 @@ public class ProductController {
         return productService.findAll();
     }
 
+    @GetMapping("/next-sku")
+    public NextSkuResponse getNextSku() {
+        return new NextSkuResponse(productService.reserveNextSku());
+    }
+
     @GetMapping("/{id}")
     public Product findById(@PathVariable long id) {
         return productService.findById(id);
